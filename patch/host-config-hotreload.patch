@@ -1,0 +1,94 @@
+diff --git a/lib/host.mjs b/lib/host.mjs
+index b097f68..835add4 100644
+--- a/lib/host.mjs
++++ b/lib/host.mjs
+@@ -1,6 +1,6 @@
+ import { homedir } from 'node:os';
+ import { join, dirname } from 'node:path';
+-import { readFileSync, existsSync } from 'node:fs';
++import { readFileSync, existsSync, statSync } from 'node:fs';
+ import { ConversationScheduler } from './scheduler.mjs';
+ import { StateFile } from './state.mjs';
+ import { StickerIndex } from './stickers.mjs';
+@@ -300,12 +300,13 @@ export function apply(ctx, supplied = {}) {
+     cacheRoot: imageConfig.cacheRoot ?? join(root, 'image-cache'),
+     python: imageConfig.python ?? bundledCandidates.find(candidate => existsSync(candidate)) };
+   let ensureAgentTools = async () => {};
+-  const controller = createController({ bridge: ctx.qqConversationBridge, config,
++  let controller = createController({ bridge: ctx.qqConversationBridge, config,
+     stateFile: new StateFile(join(root, 'state.json')),
+     beforeDispatch: agent => ensureAgentTools(agent),
+     onError: error => { ctx.logger?.warn?.(`qq-conversation: ${error.message}`); } });
+   const mounted = new Map(), attachFibers = new Set();
+   let disposed = false;
++  let reloadTimer = null;
+   const mount = (agent, agentCtx) => {
+     if (disposed || mounted.has(agent)) return;
+     const off = [];
+@@ -363,9 +364,66 @@ export function apply(ctx, supplied = {}) {
+     void controller.start().catch(error => { controller.close(); ctx.logger?.warn?.(`qq-conversation startup: ${error.message}`); });
+     return () => {
+       disposed = true; controller.close();
++      if (reloadTimer) clearInterval(reloadTimer);
++      reloadTimer = null;
+       for (const fiber of attachFibers) fiber.dispose?.();
+       attachFibers.clear(); pendingMounts.clear();
+       for (const dispose of [...mounted.values()]) dispose();
+     };
+   });
++
++  // ---- 配置热重载（本地改动）：config.json 变了就按新配置重建 controller ----
++  // 原版只在 apply 时读一次 config，改 mode / groupIds 必须重启 DSH 才生效。
++  // 这里轮询文件时间戳，发现变化就新建一个 controller 顶上去，再把老的关掉。
++  const readDiskConfig = () => {
++    try {
++      const disk = existsSync(configFile) ? JSON.parse(readFileSync(configFile, 'utf8')) : {};
++      const merged = { ...disk, ...supplied };
++      const img = merged.nativeImages ?? {};
++      merged.nativeImages = { ...img, allowedRoots: img.allowedRoots ?? [join(home, 'qq-bridge-inbox')],
++        cacheRoot: img.cacheRoot ?? join(root, 'image-cache'),
++        python: img.python ?? bundledCandidates.find(candidate => existsSync(candidate)) };
++      return merged;
++    } catch (error) {
++      ctx.logger?.warn?.(`qq-conversation: 读配置失败（保留旧配置）：${error.message}`);
++      return null;
++    }
++  };
++  const stampOf = () => { try { const st = statSync(configFile); return String(st.mtimeMs) + ':' + String(st.size); } catch { return 'missing'; } };
++  let lastStamp = stampOf();
++  const reloadConfig = () => {
++    if (disposed) return;
++    const next = readDiskConfig();
++    if (!next) return;
++    let nextController;
++    try {
++      nextController = createController({ bridge: ctx.qqConversationBridge, config: next,
++        stateFile: new StateFile(join(root, 'state.json')),
++        beforeDispatch: agent => ensureAgentTools(agent),
++        onError: error => { ctx.logger?.warn?.(`qq-conversation: ${error.message}`); } });
++    } catch (error) {
++      ctx.logger?.warn?.(`qq-conversation: 新配置建不起来（保留旧配置）：${error.message}`);
++      return;
++    }
++    const previous = controller;
++    controller = nextController;
++    try { ctx.provide('qqConversation', controller); } catch (error) { /* 已存在同名服务，忽略 */ }
++    void nextController.start().then(() => {
++      previous.close();
++      if (controller.config.mode === 'active') for (const agent of ctx.agents.roots()) tryAttach(agent);
++      ctx.logger?.info?.(`qq-conversation: 配置已热重载（mode=${controller.config.mode}，群 ${controller.config.groupIds.length} 个）`);
++    }).catch(error => {
++      controller = previous;
++      nextController.close();
++      ctx.logger?.warn?.(`qq-conversation: 热重载启动失败（回退旧配置）：${error.message}`);
++    });
++  };
++  reloadTimer = setInterval(() => {
++    if (disposed) return;
++    const now = stampOf();
++    if (now === lastStamp) return;
++    lastStamp = now;
++    reloadConfig();
++  }, 3000);
++  reloadTimer.unref?.();
+ }

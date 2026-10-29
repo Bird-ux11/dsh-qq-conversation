@@ -1,0 +1,29 @@
+{
+  "name": "dsh-qq-conversation",
+  "version": "0.1.2",
+  "description": "QQ群定向回应、整群静默接话、有界批次调度与快速读图",
+  "type": "module",
+  "main": "lib/host.mjs",
+  "exports": { ".": "./lib/host.mjs", "./scheduler": "./lib/scheduler.mjs", "./package.json": "./package.json" },
+  "files": [
+    "lib/host.mjs",
+    "lib/scheduler.mjs",
+    "lib/state.mjs",
+    "lib/stickers.mjs",
+    "lib/remote-stickers.mjs",
+    "lib/native-images.mjs",
+    "lib/vision.mjs",
+    "scripts/quick-image.py",
+    "bin/status.mjs",
+    "examples/config.json",
+    "THIRD_PARTY_LICENSES/dsh-vision-skill-MIT.txt",
+    "patch/host-config-hotreload.patch",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "engines": { "node": ">=22.19" },
+  "license": "MIT"
+}
